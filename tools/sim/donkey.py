@@ -11,7 +11,7 @@ import gym
 import numpy as np
 import gym_donkeycar
 import cv2
-
+import gym_donkeycar.envs.donkey_sim 
 
 import carla  # pylint: disable=import-error
 import numpy as np
@@ -90,7 +90,9 @@ class Camerad:
     self.Wdiv4 = W // 4 if (W % 4 == 0) else (W + (4 - W % 4)) // 4
     self.Hdiv4 = H // 4 if (H % 4 == 0) else (H + (4 - H % 4)) // 4
 
-  def cam_callback(self, image):
+
+  def cam_callback_carla(self, image):
+    # https://carla.readthedocs.io/en/0.9.12/ref_sensors/
     img = np.frombuffer(image.raw_data, dtype=np.dtype("uint8"))
     img = np.reshape(img, (H, W, 4))
     img = img[:, :, [0, 1, 2]].copy()
@@ -110,6 +112,34 @@ class Camerad:
     dat = messaging.new_message('roadCameraState')
     dat.roadCameraState = {
       "frameId": image.frame,
+      "transform": [1.0, 0.0, 0.0,
+                    0.0, 1.0, 0.0,
+                    0.0, 0.0, 1.0]
+    }
+    pm.send('roadCameraState', dat)
+    self.frame_id += 1
+
+  def cam_callback_donkey(self, image):
+
+    #img = np.frombuffer(image.raw_data, dtype=np.dtype("uint8"))
+    img = np.reshape(image, (H, W, 3))
+    img = img[:, :, [0, 1, 2]].copy()
+
+    # convert RGB frame to YUV
+    rgb = np.reshape(img, (H, W * 3))
+    rgb_cl = cl_array.to_device(self.queue, rgb)
+    yuv_cl = cl_array.empty_like(rgb_cl)
+    self.krnl(self.queue, (np.int32(self.Wdiv4), np.int32(self.Hdiv4)), None, rgb_cl.data, yuv_cl.data).wait()
+    yuv = np.resize(yuv_cl.get(), np.int32(rgb.size / 2))
+    eof = int(self.frame_id * 0.05 * 1e9)
+
+    # TODO: remove RGB send once the last RGB vipc subscriber is removed
+    self.vipc_server.send(VisionStreamType.VISION_STREAM_RGB_ROAD, img.tobytes(), self.frame_id, eof, eof)
+    self.vipc_server.send(VisionStreamType.VISION_STREAM_ROAD, yuv.data.tobytes(), self.frame_id, eof, eof)
+
+    dat = messaging.new_message('roadCameraState')
+    dat.roadCameraState = {
+      "frameId": self.frame_id,
       "transform": [1.0, 0.0, 0.0,
                     0.0, 1.0, 0.0,
                     0.0, 0.0, 1.0]
@@ -224,7 +254,22 @@ def can_function_runner(vs: VehicleState, exit_event: threading.Event):
 
 def bridge(q):
   # donkeycat setup
-  env = gym.make("donkey-warren-track-v0")
+  cam = (W, H, 3)
+  conf = {
+        "body_style": "donkey",
+        "body_rgb": (128, 128, 128),
+        "car_name": "me",
+        "font_size": 100,
+        "racer_name": "test",
+        "country": "USA",
+        "bio": "I am test client",
+        "cam_resolution": cam,
+        "img_w": cam[0],
+        "img_h": cam[1],
+        "img_d": cam[2],
+    }
+  env = gym.make("donkey-warren-track-v0", conf= conf)
+  obs = env.reset()
 
   # setup CARLA
   client = carla.Client("127.0.0.1", 2000)
@@ -275,9 +320,9 @@ def bridge(q):
   blueprint.set_attribute('fov', '40')
   blueprint.set_attribute('sensor_tick', '0.05')
   transform = carla.Transform(carla.Location(x=0.8, z=1.13))
-  camera = world.spawn_actor(blueprint, transform, attach_to=vehicle)
+  #camera = world.spawn_actor(blueprint, transform, attach_to=vehicle)
   camerad = Camerad()
-  camera.listen(camerad.cam_callback)
+  #camera.listen(camerad.cam_callback_carla)
 
   vehicle_state = VehicleState()
 
@@ -324,7 +369,10 @@ def bridge(q):
     # 1. Read the throttle, steer and brake from op or manual controls
     # 2. Set instructions in Carla
     # 3. Send current carstate to op via can
-
+    action = np.array([0.1, 0.1])
+    obs, reward, done, info = env.step(action)
+    
+    camerad.cam_callback_donkey(obs)
     cruise_button = 0
     throttle_out = steer_out = brake_out = 0.0
     throttle_op = steer_op = brake_op = 0
