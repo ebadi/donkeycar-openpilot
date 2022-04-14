@@ -67,6 +67,40 @@ def steer_rate_limit(old, new):
   else:
     return new
 
+class VehicleDonkey:
+    max_steer_angle = 10
+    def __init__(self):
+      # donkeycat setup
+      cam = (W, H, 3)
+      conf = {
+            "body_style": "donkey",
+            "body_rgb": (128, 128, 128),
+            "car_name": "me",
+            "font_size": 100,
+            "racer_name": "test",
+            "country": "USA",
+            "bio": "I am test client",
+            "cam_resolution": cam,
+            "img_w": cam[0],
+            "img_h": cam[1],
+            "img_d": cam[2],
+        }
+      self.env = gym.make("donkey-warren-track-v0", conf= conf)
+      self.obs = self.env.reset()
+      self.info = None
+      self.obs = None
+
+    def apply_control(self, vc):
+      #vc.throttle 
+      #vc.steer
+      #vc.brake
+      # action = [steering, throttle]
+      action = np.array([vc.steer * 2  , vc.throttle/10])
+      self.obs, reward, done, self.info = self.env.step(action)
+
+
+    def get_velocity(self):
+      return self.info["vel"]
 
 class Camerad:
   def __init__(self):
@@ -253,23 +287,7 @@ def can_function_runner(vs: VehicleState, exit_event: threading.Event):
 
 
 def bridge(q):
-  # donkeycat setup
-  cam = (W, H, 3)
-  conf = {
-        "body_style": "donkey",
-        "body_rgb": (128, 128, 128),
-        "car_name": "me",
-        "font_size": 100,
-        "racer_name": "test",
-        "country": "USA",
-        "bio": "I am test client",
-        "cam_resolution": cam,
-        "img_w": cam[0],
-        "img_h": cam[1],
-        "img_d": cam[2],
-    }
-  env = gym.make("donkey-warren-track-v0", conf= conf)
-  obs = env.reset()
+
 
   # setup CARLA
   client = carla.Client("127.0.0.1", 2000)
@@ -302,8 +320,10 @@ def bridge(q):
     {len(spawn_points)} for this town.'''
   spawn_point = spawn_points[args.num_selected_spawn_point]
   vehicle = world.spawn_actor(vehicle_bp, spawn_point)
+  vehicle_donkey = VehicleDonkey()
 
   max_steer_angle = vehicle.get_physics_control().wheels[0].max_steer_angle
+  max_steer_angle = vehicle_donkey.max_steer_angle
 
   # make tires less slippery
   # wheel_control = carla.WheelPhysicsControl(tire_friction=5)
@@ -369,10 +389,7 @@ def bridge(q):
     # 1. Read the throttle, steer and brake from op or manual controls
     # 2. Set instructions in Carla
     # 3. Send current carstate to op via can
-    action = np.array([0.1, 0.1])
-    obs, reward, done, info = env.step(action)
-    
-    camerad.cam_callback_donkey(obs)
+
     cruise_button = 0
     throttle_out = steer_out = brake_out = 0.0
     throttle_op = steer_op = brake_op = 0
@@ -464,12 +481,24 @@ def bridge(q):
     steer_out = steer_carla * (max_steer_angle * STEER_RATIO * -1)
     old_steer = steer_carla * (max_steer_angle * STEER_RATIO * -1)
 
+    steer_donkey =  steer_out / (max_steer_angle * STEER_RATIO * -1)
+    steer_donkey = np.clip(steer_carla, -1, 1)
+    steer_out = steer_donkey * (max_steer_angle * STEER_RATIO * -1)
+    old_steer = steer_donkey * (max_steer_angle * STEER_RATIO * -1)
+
     vc.throttle = throttle_out / 0.6
     vc.steer = steer_carla
+    vc.steer = steer_donkey
     vc.brake = brake_out
     vehicle.apply_control(vc)
+    vehicle_donkey.apply_control(vc)
+
+
+    
+    camerad.cam_callback_donkey(vehicle_donkey.obs)
 
     # --------------Step 3-------------------------------
+    vel = vehicle_donkey.get_velocity()
     vel = vehicle.get_velocity()
     speed = math.sqrt(vel.x**2 + vel.y**2 + vel.z**2)  # in m/s
     vehicle_state.speed = speed
@@ -492,7 +521,7 @@ def bridge(q):
     t.join()
   gps.destroy()
   imu.destroy()
-  camera.destroy()
+  # camera.destroy()
   vehicle.destroy()
 
 
