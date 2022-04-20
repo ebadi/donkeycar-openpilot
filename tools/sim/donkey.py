@@ -40,10 +40,15 @@ args = parser.parse_args()
 W, H = 1928, 1208
 REPEAT_COUNTER = 5
 PRINT_DECIMATION = 100
-STEER_RATIO = 15.
+STEER_RATIO = 3.
 
 pm = messaging.PubMaster(['roadCameraState', 'sensorEvents', 'can', "gpsLocationExternal"])
 sm = messaging.SubMaster(['carControl', 'controlsState'])
+
+class Vel:
+    x: float
+    y: float
+    z: float
 
 
 class VehicleState:
@@ -52,6 +57,10 @@ class VehicleState:
     self.angle = 0
     self.bearing_deg = 0.0
     self.vel = carla.Vector3D()
+    self.donkeyvel = Vel()
+    self.donkeyvel.x= 0
+    self.donkeyvel.y= 0
+    self.donkeyvel.z= 0
     self.cruise_button = 0
     self.is_engaged = False
     self.ignition = True
@@ -60,6 +69,16 @@ class VehicleState:
 def steer_rate_limit(old, new):
   # Rate limiting to 0.5 degrees per step
   limit = 0.5
+  if new > old + limit:
+    return old + limit
+  elif new < old - limit:
+    return old - limit
+  else:
+    return new
+
+def steer_rate_limit_donkey(old, new):
+  # Rate limiting to 0.5 degrees per step
+  limit = 2
   if new > old + limit:
     return old + limit
   elif new < old - limit:
@@ -85,22 +104,28 @@ class VehicleDonkey:
             "img_h": cam[1],
             "img_d": cam[2],
         }
-      self.env = gym.make("donkey-warren-track-v0", conf= conf)
+      self.env = gym.make("donkey-minimonaco-track-v0", conf= conf)
       self.obs = self.env.reset()
       self.info = None
       self.obs = None
+      self.v= Vel()
 
     def apply_control(self, vc):
       #vc.throttle 
       #vc.steer
       #vc.brake
       # action = [steering, throttle]
-      action = np.array([vc.steer * 2  , vc.throttle/10])
+      action = np.array([vc.steer, vc.throttle])
       self.obs, reward, done, self.info = self.env.step(action)
+      
+      self.v.x = self.info['vel'][0]
+      self.v.y = self.info['vel'][1]
+      self.v.z = self.info['vel'][2]
+      
 
 
     def get_velocity(self):
-      return self.info["vel"]
+      return self.v
 
 class Camerad:
   def __init__(self):
@@ -438,15 +463,16 @@ def bridge(q):
       sm.update(0)
 
       # TODO gas and brake is deprecated
-      throttle_op = clip(sm['carControl'].actuators.accel / 1.6, 0.0, 1.0)
+      throttle_op = clip(sm['carControl'].actuators.accel / 40, 0.0, 1.0)
       brake_op = clip(-sm['carControl'].actuators.accel / 4.0, 0.0, 1.0)
       steer_op = sm['carControl'].actuators.steeringAngleDeg
-
+      if rk.frame % 5 == 0:
+        print("steer_op:", steer_op, "throttle_op:", throttle_op, "vc.throttle", vc.throttle, "vc.steer", vc.steer)
       throttle_out = throttle_op
       steer_out = steer_op
       brake_out = brake_op
 
-      steer_out = steer_rate_limit(old_steer, steer_out)
+      steer_out = steer_rate_limit_donkey(old_steer, steer_out)
       old_steer = steer_out
 
     else:
@@ -481,34 +507,22 @@ def bridge(q):
     steer_out = steer_carla * (max_steer_angle * STEER_RATIO * -1)
     old_steer = steer_carla * (max_steer_angle * STEER_RATIO * -1)
 
-    steer_donkey =  steer_out / (max_steer_angle * STEER_RATIO * -1)
-    steer_donkey = np.clip(steer_carla, -1, 1)
-    steer_out = steer_donkey * (max_steer_angle * STEER_RATIO * -1)
-    old_steer = steer_donkey * (max_steer_angle * STEER_RATIO * -1)
-
     vc.throttle = throttle_out / 0.6
     vc.steer = steer_carla
-    vc.steer = steer_donkey
     vc.brake = brake_out
-    vehicle.apply_control(vc)
+    # vehicle.apply_control(vc)
     vehicle_donkey.apply_control(vc)
 
-
-    
     camerad.cam_callback_donkey(vehicle_donkey.obs)
 
     # --------------Step 3-------------------------------
     vel = vehicle_donkey.get_velocity()
-    vel = vehicle.get_velocity()
     speed = math.sqrt(vel.x**2 + vel.y**2 + vel.z**2)  # in m/s
     vehicle_state.speed = speed
     vehicle_state.vel = vel
     vehicle_state.angle = steer_out
     vehicle_state.cruise_button = cruise_button
     vehicle_state.is_engaged = is_openpilot_engaged
-
-    if rk.frame % PRINT_DECIMATION == 0:
-      print("frame: ", "engaged:", is_openpilot_engaged, "; throttle: ", round(vc.throttle, 3), "; steer(c/deg): ", round(vc.steer, 3), round(steer_out, 3), "; brake: ", round(vc.brake, 3))
 
     if rk.frame % 5 == 0:
       world.tick()
