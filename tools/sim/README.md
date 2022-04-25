@@ -8,6 +8,13 @@ openpilot implements a [bridge](bridge.py) that allows it to run in the [CARLA s
 First, clone the repository with all its sub-modules and build the docker containers.
 ```
 git clone https://github.com/commaai/openpilot.git --recursive
+cd openpilot
+git checkout donkeycar
+// ? 
+git checkout --recurse-submodules
+git submodule update --recursive
+git submodule update --init --recursive
+
 cd openpilot/tools/sim
 ./build_container.sh
 ```
